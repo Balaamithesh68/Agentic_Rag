@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edge AI - Candidate Intelligence Portal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: system-ui, -apple-system, sans-serif; }
+    </style>
+</head>
+<body class="min-h-screen p-8">
+
+    <div class="max-w-6xl mx-auto">
+        <header class="mb-8 border-b border-slate-700 pb-4">
+            <h1 class="text-3xl font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
+                Edge Agentic RAG - Resume Parser
+            </h1>
+            <p class="text-slate-400 text-sm mt-1">Powered locally by Qwen 2.5 (3B) & ChromaDB on RTX 3050</p>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+
+            <div class="flex flex-col gap-6">
+                
+                <div class="bg-slate-800 border-2 border-dashed border-slate-600 rounded-xl p-6 text-center hover:border-blue-500 transition-colors">
+                    <h2 class="text-lg font-semibold mb-2">1. Ingest Candidate Resume</h2>
+                    <p class="text-xs text-slate-400 mb-4">Upload standard .pdf or .txt file to index into local memory</p>
+                    <input type="file" id="fileInput" accept=".pdf,.txt" class="block w-full text-sm text-slate-400
+                        file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0
+                        file:text-sm file:font-semibold file:bg-blue-600 file:text-white
+                        hover:file:bg-blue-700 cursor-pointer mb-4" />
+                    <button onclick="uploadResume()" id="uploadBtn" class="w-full bg-slate-700 hover:bg-slate-600 text-sm font-medium py-2 rounded-lg transition-colors">
+                        Vectorize Document
+                    </button>
+                    <p id="uploadStatus" class="text-xs text-emerald-400 mt-3 hidden"></p>
+                </div>
+
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-6 flex-1 flex flex-col">
+                    <h2 class="text-lg font-semibold mb-2">2. Query Local Agent</h2>
+                    <p class="text-xs text-slate-400 mb-4">Ask custom questions or command schema extraction</p>
+                    
+                    <textarea id="promptInput" rows="4" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm focus:outline-none focus:border-blue-500 mb-4"
+                        placeholder="e.g., Extract all technical skills and candidate details into JSON"></textarea>
+                    
+                    <button onclick="analyzePrompt()" id="analyzeBtn" class="w-full bg-blue-600 hover:bg-blue-500 font-medium py-2.5 rounded-lg transition-colors">
+                        Execute LangGraph Pipeline
+                    </button>
+                </div>
+
+            </div>
+
+            <div class="bg-slate-900 border border-slate-700 rounded-xl p-6 flex flex-col h-[600px]">
+                <div class="flex justify-between items-center mb-4 border-b border-slate-800 pb-2">
+                    <h2 class="text-lg font-semibold text-slate-200">Execution Output</h2>
+                    <span id="badge" class="bg-slate-800 text-slate-400 text-xs px-2.5 py-1 rounded-full border border-slate-700">Idle</span>
+                </div>
+                
+                <div id="outputWindow" class="flex-1 overflow-auto font-mono text-xs bg-slate-950 p-4 rounded-lg border border-slate-800 text-slate-300 whitespace-pre-wrap">
+// Awaiting transaction pipeline...
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = "http://127.0.0.1:8000";
+
+        async function uploadResume() {
+            const fileInput = document.getElementById("fileInput");
+            const statusText = document.getElementById("uploadStatus");
+            const btn = document.getElementById("uploadBtn");
+
+            if (!fileInput.files[0]) {
+                alert("Please select a file first.");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append("file", fileInput.files[0]);
+
+            btn.innerText = "Indexing on GPU...";
+            btn.disabled = true;
+
+            try {
+                const response = await fetch(`${API_BASE}/upload-resume`, {
+                    method: "POST",
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    statusText.innerText = `✅ Indexed ${data.vector_count} chunks from ${data.file_processed}`;
+                    statusText.classList.remove("hidden");
+                } else {
+                    alert(`Upload Error: ${data.detail}`);
+                }
+            } catch (err) {
+                alert("Failed to connect to backend server. Is FastAPI running?");
+            } finally {
+                btn.innerText = "Vectorize Document";
+                btn.disabled = false;
+            }
+        }
+
+        async function analyzePrompt() {
+            const prompt = document.getElementById("promptInput").value;
+            const output = document.getElementById("outputWindow");
+            const badge = document.getElementById("badge");
+            const btn = document.getElementById("analyzeBtn");
+
+            if (!prompt) return;
+
+            btn.innerText = "Thinking...";
+            btn.disabled = true;
+            badge.innerText = "Processing (GPU VRAM)";
+            badge.className = "bg-amber-950 text-amber-400 text-xs px-2.5 py-1 rounded-full border border-amber-800 animate-pulse";
+            output.innerText = "Executing intent router and document grading nodes...";
+
+            try {
+                const response = await fetch(`${API_BASE}/analyze`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ prompt: prompt })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    output.innerText = data.response;
+                    badge.innerText = "Success";
+                    badge.className = "bg-emerald-950 text-emerald-400 text-xs px-2.5 py-1 rounded-full border border-emerald-800";
+                } else {
+                    output.innerText = `❌ Execution Failure:\n${data.detail}`;
+                    badge.innerText = "Error";
+                    badge.className = "bg-rose-950 text-rose-400 text-xs px-2.5 py-1 rounded-full border border-rose-800";
+                }
+            } catch (err) {
+                output.innerText = "❌ Network Error: Could not reach FastAPI gateway.";
+                badge.innerText = "Disconnected";
+            } finally {
+                btn.innerText = "Execute LangGraph Pipeline";
+                btn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
