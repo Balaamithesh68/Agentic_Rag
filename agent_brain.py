@@ -8,12 +8,36 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 # 1. DEFINE THE STRICT JSON SCHEMA (Pydantic)
+from pydantic import BaseModel, Field, field_validator
+
 class ExtractedResumeData(BaseModel):
     candidate_name: str = Field(description="The full legal name of the candidate")
     primary_role: str = Field(description="The job title or role they are applying for")
     technical_skills: list[str] = Field(description="List of all programming languages, frameworks, and tools")
-    years_of_experience: int = Field(default=0, description="Total estimated years of professional experience")
+    
+    # We add a strict upper limit constraint directly into the prompt description
+    years_of_experience: int = Field(
+        default=0, 
+        description="Total estimated years of professional work experience. Must be a realistic single digit integer between 0 and 15."
+    )
 
+    # --- THE CRITICAL INTERCEPTOR ---
+    @field_validator('years_of_experience', mode='before')
+    @classmethod
+    def clean_experience_number(cls, raw_value):
+        """
+        Intercepts the raw integer from the GPU before Pydantic saves it.
+        If Qwen hallucinates a Unix timestamp or giant number, we force it to 0.
+        """
+        try:
+            val = int(raw_value)
+            # If the number is physically impossible for a human lifespan, reset it
+            if val > 50 or val < 0:
+                print(f"⚠️ Intercepted hallucinated integer ({val}). Defaulting to 0.")
+                return 0
+            return val
+        except (ValueError, TypeError):
+            return 0
 # 2. DEFINE THE GRAPH STATE
 class GraphState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
