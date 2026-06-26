@@ -1,0 +1,11 @@
+langchain
+langchain_ollama
+langchain_community
+langgraph
+pydantic
+fastapi
+chromadb
+uvicorn 
+requests
+pypdf
+python-multipart
