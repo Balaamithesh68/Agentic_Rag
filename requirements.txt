@@ -9,3 +9,4 @@ uvicorn
 requests
 pypdf
 python-multipart
+langchain_chroma
