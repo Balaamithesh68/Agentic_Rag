@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  # SERVICE 1: Your FastAPI Web Gateway
+  agent-api:
+    build: .
+    container_name: resume_rag_api
+    ports:
+      - "8000:8000"
+    environment:
+      # Points Python inside Docker to the Ollama container next door
+      - OLLAMA_HOST=http://ollama-engine:11434
+    volumes:
+      # Mounts your local Windows ChromaDB folder directly into the Linux container
+      # This ensures your saved vectors survive even if you destroy the container!
+      - ./chroma_db:/app/chroma_db
+    depends_on:
+      - ollama-engine
+    networks:
+      - rag_network
+
+  # SERVICE 2: The Official Ollama GPU Engine
+  ollama-engine:
+    image: ollama/ollama:latest
+    container_name: local_llm_server
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_storage:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - rag_network
+
+networks:
+  rag_network:
+    driver: bridge
+
+volumes:
+  ollama_storage:
