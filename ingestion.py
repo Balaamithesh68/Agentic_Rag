@@ -8,6 +8,9 @@ DB_DIR = "./chroma_db"
 COLLECTION_NAME = "resume_skills_collection"
 EMBEDDING_MODEL = "nomic-embed-text"
 
+# Grab the container network URL, defaulting to localhost for manual Windows runs
+OLLAMA_URL = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+
 
 def parse_file_to_text(file_path: str) -> str:
     """Extracts raw string content from either a .pdf or .txt file."""
@@ -45,8 +48,10 @@ def run_local_ingestion(file_path: str) -> int:
     splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=100)
     chunks = splitter.split_text(document_text)
 
-    # 2. Connect to Local Engine
-    embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
+    # 2. Connect to Local Engine (UPDATED WITH base_url)
+    print(f"🔗 Connecting to Ollama Embeddings at: {OLLAMA_URL}")
+    embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=OLLAMA_URL)
+    
     vector_store = Chroma(
         persist_directory=DB_DIR,
         embedding_function=embeddings,
