@@ -1,53 +1,54 @@
 import json
+import os
 from typing import Annotated, Sequence, TypedDict
 from langchain_core.messages import BaseMessage
 from langchain_chroma import Chroma
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langgraph.graph import END, StateGraph, START
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field
-
-# 1. DEFINE THE STRICT JSON SCHEMA (Pydantic)
 from pydantic import BaseModel, Field, field_validator
 
+# Grab the container network URL
+OLLAMA_URL = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+
+# 1. DEFINE THE STRICT JSON SCHEMA (Pydantic)
 class ExtractedResumeData(BaseModel):
     candidate_name: str = Field(description="The full legal name of the candidate")
     primary_role: str = Field(description="The job title or role they are applying for")
     technical_skills: list[str] = Field(description="List of all programming languages, frameworks, and tools")
-    
-    # We add a strict upper limit constraint directly into the prompt description
     years_of_experience: int = Field(
         default=0, 
         description="Total estimated years of professional work experience. Must be a realistic single digit integer between 0 and 15."
     )
 
-    # --- THE CRITICAL INTERCEPTOR ---
     @field_validator('years_of_experience', mode='before')
     @classmethod
     def clean_experience_number(cls, raw_value):
-        """
-        Intercepts the raw integer from the GPU before Pydantic saves it.
-        If Qwen hallucinates a Unix timestamp or giant number, we force it to 0.
-        """
         try:
             val = int(raw_value)
-            # If the number is physically impossible for a human lifespan, reset it
             if val > 50 or val < 0:
                 print(f"⚠️ Intercepted hallucinated integer ({val}). Defaulting to 0.")
                 return 0
             return val
         except (ValueError, TypeError):
             return 0
+
 # 2. DEFINE THE GRAPH STATE
 class GraphState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
     documents: list[str]
     routing_decision: str
-    extracted_json: dict  # <-- NEW: Holds our parsed JSON data
+    extracted_json: dict
 
-# 3. INITIALIZE ENGINES
-llm = ChatOllama(model="qwen2.5:3b", temperature=0)
-embeddings_engine = OllamaEmbeddings(model="nomic-embed-text")
+# 3. INITIALIZE ENGINES WITH base_url
+print(f"🔗 Initializing Brain Base Models targeting: {OLLAMA_URL}")
+llm = ChatOllama(
+    model="qwen2.5:3b", 
+    temperature=0, 
+    base_url=OLLAMA_URL,
+    keep_alive="24h"  # <-- "-1" forces Ollama to keep weights in GPU VRAM forever
+)
+embeddings_engine = OllamaEmbeddings(model="nomic-embed-text", base_url=OLLAMA_URL)
 
 vector_store = Chroma(
     persist_directory="./chroma_db",
@@ -56,7 +57,7 @@ vector_store = Chroma(
 )
 retriever = vector_store.as_retriever(search_kwargs={"k": 2})
 
-# 4. DEFINE THE NODES
+# 4. DEFINE THE ARCHITECTURAL NODES
 def intent_router_node(state: GraphState):
     print("🤖 NODE: Analyzing User Intent...")
     last_message = state["messages"][-1].content
@@ -88,27 +89,16 @@ def generate_answer_node(state: GraphState):
     response = llm.invoke([("system", system_prompt), ("user", last_message)])
     return {"messages": [response]}
 
-# --- NEW NODE: THE PARSER ---
 def skill_extraction_node(state: GraphState):
-    """
-    Forces Qwen 3B to output data strictly adhering to the Pydantic schema.
-    """
     print("🤖 NODE: Executing Structured JSON Extraction...")
-    
-    # Grab the entire raw resume text straight out of ChromaDB storage
     all_docs = vector_store.get()
     full_resume_text = "\n".join(all_docs.get("documents", ["No resume found on disk."]))
     
-    # .with_structured_output is a LangChain wrapper that binds the LLM to Pydantic
     structured_engine = llm.with_structured_output(ExtractedResumeData)
-    
     prompt = f"Extract the candidate profile from this resume text:\n\n{full_resume_text}"
     parsed_data = structured_engine.invoke(prompt)
     
-    # Convert Pydantic object back to a Python dictionary for state storage
     data_dict = parsed_data.model_dump()
-    
-    # Format a clean message string to send back to the user screen
     formatted_string = f"```json\n{json.dumps(data_dict, indent=2)}\n```"
     
     return {
@@ -130,7 +120,7 @@ workflow = StateGraph(GraphState)
 workflow.add_node("intent_router", intent_router_node)
 workflow.add_node("retrieve_db", retrieve_db_node)
 workflow.add_node("generate_answer", generate_answer_node)
-workflow.add_node("skill_extractor", skill_extraction_node) # <-- NEW
+workflow.add_node("skill_extractor", skill_extraction_node)
 
 workflow.add_edge(START, "intent_router")
 
@@ -148,4 +138,5 @@ workflow.add_edge("retrieve_db", "generate_answer")
 workflow.add_edge("generate_answer", END)
 workflow.add_edge("skill_extractor", END)
 
+# THE CRITICAL EXPORT VARIABLE
 compiled_local_agent = workflow.compile()
