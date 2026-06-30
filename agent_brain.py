@@ -39,6 +39,8 @@ class GraphState(TypedDict):
     documents: list[str]
     routing_decision: str
     extracted_json: dict
+    error_feedback :str
+    retry_count: int
 
 # 3. INITIALIZE ENGINES WITH base_url
 print(f"🔗 Initializing Brain Base Models targeting: {OLLAMA_URL}")
@@ -90,21 +92,59 @@ def generate_answer_node(state: GraphState):
     return {"messages": [response]}
 
 def skill_extraction_node(state: GraphState):
-    print("🤖 NODE: Executing Structured JSON Extraction...")
+    current_retry = state.get("retry_count", 0)
+    print(f"🤖 NODE: Executing Structured Extraction (Attempt {current_retry + 1}/3)...")
+    
     all_docs = vector_store.get()
     full_resume_text = "\n".join(all_docs.get("documents", ["No resume found on disk."]))
     
-    structured_engine = llm.with_structured_output(ExtractedResumeData)
-    prompt = f"Extract the candidate profile from this resume text:\n\n{full_resume_text}"
-    parsed_data = structured_engine.invoke(prompt)
+    # 1. Check if we are in a self-correction loop
+    feedback = state.get("error_feedback", "")
+    if feedback:
+        print("⚠️ FEEDBACK DETECTED: Forcing LLM to self-correct...")
+        prompt = (
+            f"You previously failed to extract the JSON. Here was the exact system error:\n"
+            f"{feedback}\n\n"
+            f"DO NOT make this mistake again. Extract the profile from this text:\n\n{full_resume_text}"
+        )
+    else:
+        prompt = f"Extract the candidate profile from this resume text:\n\n{full_resume_text}"
     
-    data_dict = parsed_data.model_dump()
-    formatted_string = f"```json\n{json.dumps(data_dict, indent=2)}\n```"
+    # 2. Execute and Catch
+    try:
+        structured_engine = llm.with_structured_output(ExtractedResumeData)
+        parsed_data = structured_engine.invoke(prompt)
+        
+        data_dict = parsed_data.model_dump()
+        formatted_string = f"```json\n{json.dumps(data_dict, indent=2)}\n```"
+        
+        # Success! Clear errors and pass the data forward.
+        return {
+            "extracted_json": data_dict,
+            "messages": [("assistant", formatted_string)],
+            "error_feedback": "", 
+            "retry_count": current_retry + 1
+        }
+        
+    except Exception as e:
+        # Crash! Save the exact red error log to show to the LLM on the next loop.
+        print(f"❌ EXTRACTION FAILED: {str(e)[:100]}...")
+        return {
+            "error_feedback": str(e),
+            "retry_count": current_retry + 1
+        }
+def check_extraction_quality(state: GraphState):
+    # If there are no errors, or we maxed out our 3 attempts, end the graph.
+    if state.get("error_feedback") == "" or state.get("retry_count", 0) >= 3:
+        if state.get("retry_count", 0) >= 3 and state.get("error_feedback") != "":
+            print("🛑 FATAL: Agent failed 3 times. Terminating loop.")
+        else:
+            print("✅ QUALITY PASSED: JSON Schema is flawless.")
+        return "end_path"
     
-    return {
-        "extracted_json": data_dict,
-        "messages": [("assistant", formatted_string)]
-    }
+    # If there is an error, force the loop back to the extractor!
+    print("🔄 QUALITY FAILED: Triggering Agentic Reflexion loop...")
+    return "retry_path"
 
 # 5. CONDITIONAL EDGE LOGIC
 def route_conditional_path(state: GraphState):
@@ -136,7 +176,16 @@ workflow.add_conditional_edges(
 
 workflow.add_edge("retrieve_db", "generate_answer")
 workflow.add_edge("generate_answer", END)
-workflow.add_edge("skill_extractor", END)
+# Replace workflow.add_edge("skill_extractor", END) with this:
+
+workflow.add_conditional_edges(
+    "skill_extractor",
+    check_extraction_quality,
+    {
+        "end_path": END,
+        "retry_path": "skill_extractor"  # <-- The cyclic loop!
+    }
+)
 
 # THE CRITICAL EXPORT VARIABLE
 compiled_local_agent = workflow.compile()
